@@ -97,3 +97,54 @@ else:
     st.dataframe(view[['source','published','title','primary_lu','status','summary','url','needs_review','error']],hide_index=True,use_container_width=True,
                  column_config={'url':st.column_config.LinkColumn('Sumber')})
     st.download_button('Unduh CSV',view.to_csv(index=False).encode('utf-8-sig'),file_name='lu_monitoring.csv',mime='text/csv')
+
+
+st.header('4. Agent 4 — Laporan monitoring gabungan')
+st.caption('Sintesis berita yang sudah selesai diklasifikasikan; tidak memanggil scraper lagi.')
+report_rows = [r for r in store.rows() if r.get('status') == 'completed' and r.get('primary_lu') in CATEGORIES]
+report_counts = {code: sum(r['primary_lu'] == code for r in report_rows) for code in CATEGORIES}
+available = [c for c, cnt in report_counts.items() if cnt]
+if not available:
+    st.info('Belum ada berita relevan yang selesai diklasifikasikan untuk dibuat laporan.')
+else:
+    report_category = st.selectbox(
+        'Kategori LU untuk laporan gabungan', available,
+        format_func=lambda c: f'{c} — {CATEGORIES[c]} ({report_counts[c]} berita)',
+        key='report_category'
+    )
+    max_report_articles = st.slider('Maksimum artikel untuk laporan', 1, 50, 20, key='max_report_articles')
+    st.caption('Satu klik = satu permintaan AI. Laporan disimpan sementara di sesi browser, bukan database.')
+    if st.button('Buat summary monitoring per LU', type='primary'):
+        key = secret('GEMINI_API_KEY')
+        if not key:
+            st.error('GEMINI_API_KEY belum disetel di Streamlit Secrets.')
+        else:
+            from agents.classifier import make_client
+            from agents.monitoring_report import build_monitoring_report
+            try:
+                with st.spinner('Agent 4 menyusun laporan gabungan...'):
+                    report, sources = build_monitoring_report(
+                        make_client(key), summary_model, report_rows,
+                        report_category, max_report_articles
+                    )
+                st.session_state['monitoring_report'] = {
+                    'category': report_category, 'text': report, 'sources': sources
+                }
+            except Exception as exc:
+                st.error(f'Gagal membuat laporan: {exc}')
+    report_result = st.session_state.get('monitoring_report')
+    if report_result:
+        code = report_result['category']
+        st.subheader(f'Laporan: {code} — {CATEGORIES[code]}')
+        st.markdown(report_result['text'])
+        st.subheader('Sumber berita yang digunakan')
+        for item in report_result['sources']:
+            if item['url'].startswith(('https://', 'http://')):
+                st.markdown(f"[{item['number']}] [{item['title']}]({item['url']}) — {item['published']}")
+            else:
+                st.write(f"[{item['number']}] {item['title']} — {item['published']}")
+        exported = (f"Laporan monitoring LU {code} — {CATEGORIES[code]}\n\n"
+                    + report_result['text'] + '\n\nSUMBER\n'
+                    + '\n'.join(f"[{r['number']}] {r['title']} | {r['url']} | {r['published']}" for r in report_result['sources']))
+        st.download_button('Unduh laporan TXT', exported.encode('utf-8'),
+                           file_name=f'laporan_LU_{code}.txt', mime='text/plain')
